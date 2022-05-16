@@ -8,6 +8,7 @@ import           Criterion
 
 import           Control.MapReduce.Engines.GroupBy
                                                as MRG
+import           Control.Foldl                 as FL
 import           Data.Function                  ( on )
 import           Data.Text                     as T
 import           Data.List                     as L
@@ -32,6 +33,13 @@ createPairData n = do
   let randLabels = L.take n $ randomRs ('A', 'Z') g
       randInts   = L.take n $ randomRs (1, 100) g
   return $ L.zip randLabels randInts
+
+createPairDataSeq :: Int -> IO (Seq.Seq (Char, Int))
+createPairDataSeq n = do
+  g <- newStdGen
+  let randLabels = L.take n $ randomRs ('A', 'Z') g
+      randInts   = L.take n $ randomRs (1, 100) g
+  return $ Seq.zip (Seq.fromList randLabels) (Seq.fromList randInts)
 --      makePair k = (toEnum $ fromEnum 'A' + k `mod` 26, k `mod` 31)
 --  in  L.unfoldr (\m -> if m > n then Nothing else Just (makePair m, m + 1)) 0
 
@@ -70,12 +78,24 @@ check reference toCheck = do
           then putStrLn (name ++ " good.")
           else putStrLn
             (name ++ " different!\n ref=\n" ++ show refGS ++ "\n" ++ show gs)
-  mapM_ checkOne toCheck
+  F.mapM_ checkOne toCheck
 
-toTry :: [(String, [(Char, Int)] -> [(Char, [Int])])]
-toTry =
-  [ ( "strict map"
-    , listViaStrictMap
+flSeq = FL.Fold (Seq.|>) Seq.empty id
+
+toTrySeq :: [(String, Seq.Seq (Char, Int) -> Seq.Seq (Char, [Int]))]
+toTrySeq =
+  [ ( "Seq.fromList . listViaStrictMap . Seq.toList"
+    , Seq.fromList . listViaStrictMap . F.toList
+    )
+  , ("groupByOrderedKey" , groupByOrderedKey (pure @[]) flSeq)
+  , ("groupByHashableKey", groupByHashableKey (pure @[]) flSeq)
+  ]
+
+toTryL :: [(String, [(Char, Int)] -> [(Char, [Int])])]
+toTryL =
+  [ ("strict map", listViaStrictMap)
+  , ( "groupByOrderedKey"
+    , (groupByOrderedKey (pure @[]) FL.list)
     )
 {-    
     , ("listViaLazyMap: lazy map"                 , listViaLazyMap)
@@ -144,9 +164,14 @@ toTry =
 -}
   ]
 
-benchAll dat toTry = defaultMain
+benchL dat toTryL = defaultMain
   [ bgroup (show (L.length dat) ++ " of [(Char, Int)]")
-           (fmap (\(n, f) -> (bench n $ nf f dat)) toTry)
+           (fmap (\(n, f) -> (bench n $ nf f dat)) toTryL)
+  ]
+
+benchSeq dat toTrySeq = defaultMain
+  [ bgroup (show (Seq.length dat) ++ " of Seq (Char, Int)")
+           (fmap (\(n, f) -> (bench n $ nf f dat)) toTrySeq)
   ]
 
 checkAll dat toTry =
@@ -158,7 +183,10 @@ weighAll dat toTry = W.mainWith $ mapM_ (\(n, f) -> W.func n f dat) toTry
 
 main :: IO ()
 main = do
-  dat <- createPairData 50000
-  checkAll dat toTry
+  datL   <- createPairData 50000
+  datSeq <- createPairDataSeq 50000
+  checkAll datL toTryL
   putStrLn ""
-  benchAll dat toTry
+  benchSeq datSeq toTrySeq
+--  benchL datL toTryL
+

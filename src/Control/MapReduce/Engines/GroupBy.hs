@@ -55,6 +55,9 @@ module Control.MapReduce.Engines.GroupBy
   , groupByNaiveInsert2
   , listViaHylomorphism
   , listViaMetamorphism
+  , groupBy
+  , groupByOrderedKey
+  , groupByHashableKey
   )
 where
 
@@ -63,6 +66,8 @@ import qualified Data.DList                    as DL
 import           Data.DList                     ( DList )
 import           Data.Function                  ( on )
 import qualified Data.Map.Strict               as MS
+import qualified Data.Map.Lazy                 as ML
+import qualified Data.HashMap.Strict           as HMS
 import           Data.Maybe                     ( fromMaybe )
 import qualified Data.List                     as L
 import           Data.Functor.Foldable         as RS
@@ -80,6 +85,7 @@ import           Control.Arrow                  ( second
 import qualified Control.Foldl                 as FL
 import           GHC.Exts                       ( IsList
                                                 , Item
+                                                , build
                                                 )
 import qualified Yaya.Fold                     as Y
 import           Yaya.Pattern                   ( XNor(..) )
@@ -516,6 +522,46 @@ listViaHylomorphism :: Ord k => [(k, v)] -> [(k, [v])]
 listViaHylomorphism = RS.hylo stripNothings buildList . flip (,) MS.empty
 
 
+groupBy
+  :: forall t k c v l g
+   . (Foldable g, Functor g)
+  => FL.Fold (k, v) t -- ^ fold to tree
+  -> (t -> [(k, l)]) -- ^ tree to List
+  -> (forall a . FL.Fold a (g a)) -- ^ fold to g
+  -> g (k, v)
+  -> g (k, l)
+groupBy foldToMap mapToList foldOut x =
+  FL.fold foldOut . mapToList . FL.fold foldToMap $ x
+{-# INLINABLE groupBy #-}
+
+groupByOrderedKey
+  :: forall g k v l
+   . (Ord k, Semigroup l, Foldable g, Functor g)
+  => (v -> l)
+  -> (forall a . FL.Fold a (g a))
+  -> g (k, v)
+  -> g (k, l)
+groupByOrderedKey promote = groupBy foldToStrictMap MS.toList
+ where
+  foldToStrictMap = FL.premap (second promote) $ FL.Fold
+    (\t (k, l) -> MS.insertWithKey (\_ x y -> x <> y) k l t)
+    MS.empty
+    id
+{-# INLINABLE groupByOrderedKey #-}
+
+groupByHashableKey
+  :: forall g k v l
+   . (Hashable k, Eq k, Semigroup l, Foldable g, Functor g)
+  => (v -> l)
+  -> (forall a . FL.Fold a (g a))
+  -> g (k, v)
+  -> g (k, l)
+groupByHashableKey promote = groupBy foldToStrictHashMap HMS.toList
+ where
+  foldToStrictHashMap = FL.premap (second promote)
+    $ FL.Fold (\t (k, l) -> HMS.insertWith (<>) k l t) HMS.empty id
+{-# INLINABLE groupByHashableKey #-}
+
 
 {-
 treeCoalg
@@ -556,13 +602,6 @@ alg2 (Cons (k, v) ((k', vs) : xs)) = case compare k k' of
 groupByNaiveInsert2 :: Ord k => [(k, v)] -> [(k, [v])]
 groupByNaiveInsert2 = RS.fold alg2
 {-# INLINABLE groupByNaiveInsert2 #-}
-
-
-
-
-
-
-
 
 {-
 data TreeF a r where
